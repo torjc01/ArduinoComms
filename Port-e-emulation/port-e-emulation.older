@@ -1,0 +1,280 @@
+/*
+ * Deployé sur Arduino Uno
+ * 
+ * Au démarrage, l'application n'a pas d'adresse disponible pour 
+ * faire broadcast. Elle devrait alors envoyer un message de 
+ * génération d'adresse, via SerialComms, au dispositif NodeMCU,
+ * et attendre la réponse avec le nouvel adresse.
+ * Cet adresse, dans le fond, serait juste le suffixe de l'url 
+ * raccourcie, qui devrait être concatené au prefixe du deeplink 
+ * défini en constant dans le fichier de header thingProperties.h   
+ * Copyright (c) 2023 Gouvernement du Québec
+ * Auteur: Julio Cesar Torres (torj01)
+ * SPDX-License-Identifier: LiLiQ-R-v.1.1
+ * License-Filename: /LICENSE
+ */
+
+// ----------------------------
+// Standard Libraries
+// ----------------------------
+
+// NFC
+#include <SPI.h>
+#include <PN532_SPI.h>
+#include "PN532.h"
+
+// Software Serial
+#include <SoftwareSerial.h>
+
+// -----------------------------
+// Fichiers header personnalisés
+// -----------------------------
+#include "arduino_secrets.h"
+#include "thingProperties.h"
+
+// Header  NFC 
+#include "emulatetag.h"
+#include "NdefMessage.h"
+
+// -----------------------------
+// Variables globales 
+// -----------------------------
+
+// Objets de la librairie PN532
+PN532_SPI pn532spi(SPI, 10);
+EmulateTag nfc(pn532spi);
+
+// Objets de la librairie NDEF
+uint8_t ndefBuf[NFC_BUFFER_SIZE];
+NdefMessage message;
+int messageSize;
+
+// Identificateur du tag. Doit avoir 3 bytes de long
+uint8_t uid[3] = { 0x12, 0x34, 0x56 };
+
+// Objet de la librairie SoftwareSerial
+SoftwareSerial porteSerial(6, 7);  // Cria uma porta serial virtual nos pinos digitais 6 (RX) e 7 (TX)
+
+String adresse = "";
+int etatAdresse; 
+
+/**
+ * 
+ */
+void setup(){
+    
+    Serial.begin(115200); 
+    porteSerial.begin(9600); 
+
+    Serial.println("[NFC] Setup application");
+    Serial.println("[NFC] ------- Emulation de Tag --------");
+
+    //serialFlush();
+
+    etatAdresse = ADDRESS_NON_DISP;
+}
+
+/**
+ * 
+ */
+void loop(){
+    // Si l'adresse n'existe pas, faire la demande d'un nouvel. 
+    Serial.println("[NFC] Loop...");
+    if(etatAdresse == ADDRESS_NON_DISP){
+        Serial.println("[NFC] Non dispo");
+        //adresse = genererAdresse();
+        //broadcast(adresse);
+        broadcast(genererAdresse());
+    }
+    delay(3000);
+}
+
+/**
+ * 
+ */
+String genererAdresse(){
+    Serial.println("[NFC] Demande generation d'adresse");
+    // String adresse = DEEPLINK_ROOT;
+    String b = "";
+    int bytesSent = porteSerial.write(SIG_GEN); 
+    delay(DELAY_L); 
+
+    /*
+     * https://www.programmingelectronics.com/serial-read/
+    int k = 0; 
+    // creer une var pour tenir le message 
+    static char message[128]; 
+    static unsigned int messagePos = 0; 
+    while(porteSerial.available() > 0) {
+      
+          Serial.println(k);
+
+          // read next available byte in the serial receiver buffer 
+          char inByte = porteSerial.read(); 
+          Serial.println(inByte);
+          // Message comming in (check not terminating char) and guard for over message size 
+          if(inByte != '\n' && (messagePos < 32 -1)){
+              // add the incoming byte to our message 
+              message[messagePos] = inByte; 
+              messagePos++; 
+          } else {
+              // full message received 
+              // Add null char to string 
+              message[messagePos] = '\0';
+
+                 // Print the message
+              Serial.println(message);
+              adresse = message;
+              // reset for the next message 
+              messagePos = 0; 
+          } 
+          k++;
+    }
+    */
+    
+    if(porteSerial.available() > 0){
+        Serial.println("Porte serial lue...");
+        b = porteSerial.readStringUntil('\n');
+        Serial.print("Adresse lu: ");
+        Serial.println(b);
+        delay(DELAY_M);  
+    } else {
+      Serial.println("Pas de temps disponible pour recevoir....");   
+    }
+
+    etatAdresse = ADDRESS_DISP;
+    return DEEPLINK_ROOT + b;  
+}
+
+
+/**
+ * 
+ */
+void broadcast(String param){
+    Serial.println("[NFC] Broadcasting..."); 
+    // String broadcast = DEEPLINK_ROOT + param;
+    // broadcast = "https://github.com";
+    // broadcast += param;
+    Serial.print("[NFC] Adresse broadcast: ");
+    Serial.println(param);
+    message = NdefMessage();
+     
+    message.addUriRecord(param); 
+   
+    messageSize = message.getEncodedSize();
+    if (messageSize > sizeof(ndefBuf)) {
+        Serial.println("[NFC] ndefBuf est trop petit");
+        while (1) { }
+    }
+
+    Serial.print("[NFC] Taille du message Ndef codifié: ");
+    Serial.println(messageSize);
+
+    message.encode(ndefBuf);
+
+    // commenter la command si l'on ne veut pas du ndef message
+    nfc.setNdefFile(ndefBuf, messageSize);
+    
+    // uid doit avoir 3 bytes!
+    nfc.setUid(uid);
+    
+    nfc.init();
+    
+    // decommenter pour overriding ndef au cas une ecriture est deja faite
+    //nfc.setNdefFile(ndefBuf, messageSize); 
+
+    // start emulation (blocks)
+    nfc.emulate();
+        
+    // ou start emulation avec du timeout
+    /*if(!nfc.emulate(1000)){ // timeout 1 second
+      Serial.println("timed out");
+    }*/
+    
+    // empecher ecriture du tag
+    // nfc.setTagWriteable(false);
+    
+    if(nfc.writeOccured()){
+        Serial.println("C");
+        Serial.println("[NFC] \nWrite occured !");
+        uint8_t* tag_buf; uint16_t length;
+        nfc.getContent(&tag_buf, &length);
+        NdefMessage msg = NdefMessage(tag_buf, length);
+        msg.print();
+    }
+    Serial.println("Message livré au telephone");
+    delay(DELAY_S);
+    etatAdresse = ADDRESS_NON_DISP;
+}
+
+
+/**
+ * 
+
+void broadcast(String param){
+    Serial.println("[NFC] Broadcasting..."); 
+    String broadcast = DEEPLINK_ROOT + param;
+    broadcast = "https://github.com";
+    // broadcast += param;
+    Serial.print("[NFC] Adresse broadcast: ");
+    Serial.println(broadcast);
+    message = NdefMessage();
+     
+    message.addUriRecord(broadcast); 
+   
+    messageSize = message.getEncodedSize();
+    if (messageSize > sizeof(ndefBuf)) {
+        Serial.println("[NFC] ndefBuf est trop petit");
+        while (1) { }
+    }
+
+    Serial.print("[NFC] Taille du message Ndef codifié: ");
+    Serial.println(messageSize);
+
+    message.encode(ndefBuf);
+
+    // commenter la command si l'on ne veut pas du ndef message
+    nfc.setNdefFile(ndefBuf, messageSize);
+    
+    // uid doit avoir 3 bytes!
+    nfc.setUid(uid);
+    
+    nfc.init();
+    
+    // decommenter pour overriding ndef au cas une ecriture est deja faite
+    //nfc.setNdefFile(ndefBuf, messageSize); 
+
+    // start emulation (blocks)
+    nfc.emulate();
+        
+    // ou start emulation avec du timeout
+    //if(!nfc.emulate(1000)){ // timeout 1 second
+    //  Serial.println("timed out");
+    //}
+    
+    // empecher ecriture du tag
+    // nfc.setTagWriteable(false);
+    
+    if(nfc.writeOccured()){
+        Serial.println("C");
+        Serial.println("[NFC] \nWrite occured !");
+        uint8_t* tag_buf; uint16_t length;
+        nfc.getContent(&tag_buf, &length);
+        NdefMessage msg = NdefMessage(tag_buf, length);
+        msg.print();
+    }
+    Serial.println("Message livré au telephone");
+    delay(DELAY_S);
+    etatAdresse = ADDRESS_NON_DISP;
+}
+ */
+
+/**
+ * 
+ */
+void serialFlush(){
+
+    while(porteSerial.available() > 0) {
+        char t = porteSerial.read();
+    }
+}
